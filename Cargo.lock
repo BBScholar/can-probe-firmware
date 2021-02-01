@@ -3,7 +3,7 @@
 [[package]]
 name = "adaptor-common"
 version = "0.1.0"
-source = "git+https://github.com/BBScholar/can-probe-rs.git#d551e7471daf63595199dc7427cf8d8cf661f2f9"
+source = "git+https://github.com/BBScholar/can-probe-rs#3f891266e8f48faff30f12e0d144c64466ddbcf1"
 dependencies = [
  "getset",
  "postcard",
@@ -26,6 +26,8 @@ dependencies = [
  "heapless",
  "nb 1.0.0",
  "postcard",
+ "serde",
+ "stm32f1 0.12.1",
  "stm32f1xx-hal",
  "volatile",
 ]
@@ -521,6 +523,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "stm32f1"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ccfa19fef0f1655900103f3878db127e7b205e2e5730e3042d61f7e03602996"
+dependencies = [
+ "bare-metal",
+ "cortex-m 0.6.7",
+ "vcell",
+]
+
+[[package]]
 name = "stm32f1xx-hal"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -533,7 +546,7 @@ dependencies = [
  "embedded-hal",
  "nb 0.1.3",
  "stm32-usbd",
- "stm32f1",
+ "stm32f1 0.11.0",
  "void",
 ]
 

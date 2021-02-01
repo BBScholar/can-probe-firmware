@@ -21,13 +21,16 @@ defmt = "0.1.3"
 defmt-rtt = "0.1.0"
 bitfield = "0.13.2"
 postcard = "0.5.1"
+serde = {version = "1.0.123", default-features = false}
+stm32f1 = "0.12.1"
 
 [dependencies.stm32f1xx-hal]
 version = ""
 features = ["stm32f103", "rt", "stm32-usbd"]
 
 [dependencies.adaptor-common]
-git = "https://github.com/BBScholar/can-probe-rs.git"
+# git = "https://github.com/BBScholar/can-probe-rs-common"
+git = "https://github.com/BBScholar/can-probe-rs"
 
 [[bin]]
 name = "adaptor-firmware"
