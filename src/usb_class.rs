@@ -138,6 +138,8 @@ where
         &self,
         writer: &mut usb::class_prelude::DescriptorWriter,
     ) -> usb::Result<()> {
+        writer.iad(self.comm_if, 2, 0x0, 0x0, 0x0)?;
+        writer.interface(self.comm_if, 0x0a, 0x00, 0x00)?;
         writer.interface(self.data_if, 0x0a, 0x00, 0x00)?;
         writer.endpoint(&self.write_ep)?;
         writer.endpoint(&self.read_ep)?;
