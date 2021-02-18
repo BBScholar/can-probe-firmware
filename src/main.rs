@@ -4,6 +4,8 @@
 
 mod usb_class;
 
+use usb_class::{UsbBusType, USB};
+
 // Plans
 // stm32f103
 // https://ww1.microchip.com/downloads/en/DeviceDoc/MCP2515-Stand-Alone-CAN-Controller-with-SPI-20001801J.pdf
@@ -24,7 +26,6 @@ use rtic::app;
 use rtic::cyccnt::{Instant, U32Ext as _};
 
 //
-use hal::usb::{Peripheral, UsbBus};
 use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 #[defmt::timestamp]
@@ -37,9 +38,8 @@ const APP: () = {
     struct Resources {
         settings: adaptor_common::AdaptorSettings,
 
-        usb_device: usb::device::UsbDevice<'static, hal::usb::UsbBusType>,
-        usb_can_class:
-            usb_class::CanProbeClass<'static, hal::usb::UsbBusType, heapless::consts::U32>,
+        usb_device: usb::device::UsbDevice<'static, UsbBusType>,
+        usb_can_class: usb_class::CanProbeClass<'static, UsbBusType, heapless::consts::U32>,
 
         #[cfg(debug_assertions)]
         #[init(0)]
@@ -48,7 +48,7 @@ const APP: () = {
 
     #[init()]
     fn init(cx: init::Context) -> init::LateResources {
-        static mut USB_BUS: Option<usb::bus::UsbBusAllocator<hal::usb::UsbBusType>> = None;
+        static mut USB_BUS: Option<usb::bus::UsbBusAllocator<UsbBusType>> = None;
         let device = cx.device;
 
         device.DBGMCU.cr.modify(|_, w| w.dbg_sleep().set_bit());
@@ -64,22 +64,30 @@ const APP: () = {
         let mut gpioa = device.GPIOA.split(&mut rcc.apb2);
         let mut gpiob = device.GPIOB.split(&mut rcc.apb2);
 
-        let usb_dm = gpioa.pa11;
-        let usb_dp = gpioa.pa12.into_floating_input(&mut gpioa.crh);
+        // let usb_dm = gpioa.pa11;
+        // let usb_dp = gpioa.pa12.into_floating_input(&mut gpioa.crh);
 
         // usb bus setup
-        let usb = Peripheral {
-            usb: device.USB,
-            pin_dm: usb_dm,
-            pin_dp: usb_dp,
+        let usb = USB {
+            usb_global: device.USB_OTG_GLOBAL,
+            usb_device: device.USB_OTG_DEVICE,
+            usb_pwrclk: device.USB_OTG_PWRCLK,
+            pin_dm: gpioa.pa11,
+            pin_dp: gpioa.pa12,
+            hclk: clocks.hclk(),
         };
 
-        *USB_BUS = Some(UsbBus::new(usb));
+        let USB_MEM: &'static mut [u32; 1024] =
+            cortex_m::singleton!(: [u32; 1024] = [0; 1024]).unwrap();
+
+        *USB_BUS = Some(synopsys_usb_otg::UsbBus::new(usb, USB_MEM));
 
         let usb_device = usb::device::UsbDeviceBuilder::new(
             USB_BUS.as_ref().unwrap(),
             usb::device::UsbVidPid(0x69, 0x420),
         )
+        .manufacturer("Scholarly Systems")
+        .product("Scholarly CAN Probe")
         .supports_remote_wakeup(false)
         .self_powered(false)
         .max_power(100)

@@ -1,13 +1,56 @@
+use stm32f1xx_hal as hal;
 use usb_device as usb;
 
 use adaptor_common::AdaptorSettings;
 use adaptor_common::CANFrame;
+
+use synopsys_usb_otg::UsbPeripheral;
 
 use usb::bus::{InterfaceNumber, UsbBus, UsbBusAllocator};
 use usb::class::UsbClass;
 use usb::endpoint::{Endpoint, EndpointIn, EndpointOut};
 
 use heapless::{consts, Vec};
+
+use hal::gpio::{Alternate, Floating, PushPull};
+
+pub struct USB<A, B> {
+    pub usb_global: hal::stm32::USB_OTG_GLOBAL,
+    pub usb_device: hal::stm32::USB_OTG_DEVICE,
+    pub usb_pwrclk: hal::stm32::USB_OTG_PWRCLK,
+    pub pin_dm: hal::gpio::gpioa::PA11<A>,
+    pub pin_dp: hal::gpio::gpioa::PA12<B>,
+    pub hclk: hal::time::Hertz,
+}
+
+unsafe impl<A, B> Sync for USB<A, B> {}
+
+unsafe impl UsbPeripheral for USB {
+    const REGISTERS: *const () = hal::stm32::USB_OTG_GLOBAL::ptr() as *const ();
+
+    const HIGH_SPEED: bool = true;
+
+    const FIFO_DEPTH_WORDS: usize = 160;
+
+    const ENDPOINT_COUNT: usize = 4;
+
+    fn enable() {
+        let rcc = unsafe { &*hal::stm32::RCC::ptr() };
+
+        cortex_m::interrupt::free(|_| {
+            rcc.ahbenr.write(|w| w.otgfsen().set_bit());
+
+            rcc.ahbrstr.write(|w| w.otgfsrst().set_bit());
+            rcc.ahbrstr.write(|w| w.otgfsrst().clear_bit());
+        });
+    }
+
+    fn ahb_frequency_hz(&self) -> u32 {
+        self.hclk.0
+    }
+}
+
+pub type UsbBusType = synopsys_usb_otg::UsbBus<USB>;
 
 pub struct CanProbeClass<'a, B, S>
 where
