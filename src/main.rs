@@ -2,7 +2,8 @@
 #![no_main]
 #![allow(dead_code, unused_imports, unused_variables, unused_mut)]
 
-mod usb_class;
+pub(crate) mod error_codes;
+pub(crate) mod usb_class;
 
 // Plans
 // stm32f103
@@ -10,7 +11,6 @@ mod usb_class;
 
 pub use stm32f1xx_hal as hal;
 pub use usb_device as usb;
-use usbd_serial;
 
 use core::prelude::*;
 use embedded_hal::prelude::*;
@@ -25,7 +25,6 @@ use rtic::cyccnt::{Instant, U32Ext as _};
 
 //
 use hal::usb::{Peripheral, UsbBus};
-use usbd_serial::{SerialPort, USB_CLASS_CDC};
 
 #[defmt::timestamp]
 fn timestamp() -> u64 {
@@ -44,6 +43,12 @@ const APP: () = {
         #[cfg(debug_assertions)]
         #[init(0)]
         frames_processed: usize,
+
+        #[init(false)]
+        running: bool,
+
+        #[init(true)]
+        leds_enabled: bool,
     }
 
     #[init()]
@@ -80,10 +85,12 @@ const APP: () = {
             USB_BUS.as_ref().unwrap(),
             usb::device::UsbVidPid(0x69, 0x420),
         )
+        .manufacturer("Scholarly Devices")
+        .product("Scholarly CAN Probe")
         .supports_remote_wakeup(false)
         .self_powered(false)
         .max_power(100)
-        .device_class(USB_CLASS_CDC)
+        .device_class(0x0a)
         .device_release(0x0010) // 0.1
         .build();
 
@@ -105,7 +112,7 @@ const APP: () = {
         }
     }
 
-    #[task(binds = USB_HP_CAN_TX, resources=[usb_device, usb_can_class, settings])]
+    #[task(binds = USB_HP_CAN_TX, resources=[usb_device, usb_can_class, settings, leds_enabled, running])]
     fn usb_rx(cx: usb_rx::Context) {
         use usb::class::UsbClass;
         let usb_device = cx.resources.usb_device;
@@ -118,6 +125,9 @@ const APP: () = {
             for frame in class.read_frames() {}
             class.clear_read_buffer();
 
+            *cx.resources.leds_enabled = class.leds_enabled();
+            *cx.resources.running = class.running();
+
             match class.update_settings_if_new(cx.resources.settings) {
                 true => {
                     // change can settings
@@ -127,7 +137,7 @@ const APP: () = {
         }
     }
 
-    #[task(binds = EXTI1, resources=[usb_can_class])]
+    #[task(binds = EXTI1, resources=[usb_can_class, running])]
     fn can_rx(cx: can_rx::Context) {
         use adaptor_common::CANFrame;
         let class = cx.resources.usb_can_class;
@@ -137,7 +147,9 @@ const APP: () = {
         // TODO: recieve frames
 
         // write frames to usb
-        let _ = class.write_frames(vec.into_iter());
+        if *cx.resources.running {
+            let _ = class.write_frames(vec.into_iter());
+        }
     }
 
     extern "C" {

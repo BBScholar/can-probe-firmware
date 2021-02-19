@@ -2,6 +2,7 @@ use usb_device as usb;
 
 use adaptor_common::AdaptorSettings;
 use adaptor_common::CANFrame;
+use adaptor_common::UsbRequests;
 
 use usb::bus::{InterfaceNumber, UsbBus, UsbBusAllocator};
 use usb::class::UsbClass;
@@ -14,19 +15,21 @@ where
     B: usb::bus::UsbBus,
     S: heapless::ArrayLength<CANFrame>,
 {
-    //
-    buffered_settings: Option<AdaptorSettings>,
-
     write_buffer: heapless::Vec<CANFrame, S>,
     read_buffer: heapless::Vec<CANFrame, S>,
 
     // interfaces
-    comm_if: InterfaceNumber,
     data_if: InterfaceNumber,
 
     // endpoints
     write_ep: EndpointIn<'a, B>,
     read_ep: EndpointOut<'a, B>,
+
+    // data
+    running: bool,
+    leds_enabled: bool,
+    to_reset: bool,
+    buffered_settings: Option<AdaptorSettings>,
 }
 
 impl<B, S> CanProbeClass<'_, B, S>
@@ -40,14 +43,35 @@ where
         let read_buffer = Vec::<CANFrame, S>::new();
         let write_buffer = Vec::<CANFrame, S>::new();
         CanProbeClass {
-            comm_if: alloc.interface(),
             data_if: alloc.interface(),
             read_ep: alloc.bulk(Self::DATA_PACKET_SIZE),
             write_ep: alloc.bulk(Self::DATA_PACKET_SIZE),
             read_buffer,
             write_buffer,
             buffered_settings: None,
+            running: false,
+            leds_enabled: true,
+            to_reset: false,
         }
+    }
+
+    #[inline]
+    pub fn running(&self) -> bool {
+        self.running
+    }
+
+    #[inline]
+    pub fn leds_enabled(&self) -> bool {
+        self.leds_enabled
+    }
+
+    #[inline]
+    pub fn should_reset(&mut self) -> bool {
+        let val = self.to_reset;
+        if val {
+            self.to_reset = false
+        }
+        val
     }
 
     pub fn write_frame(&mut self, frame: CANFrame) -> Result<(), CANFrame> {
@@ -93,17 +117,18 @@ where
     pub fn update(&mut self) {
         let mut byte_buf = Vec::<u8, consts::U64>::new();
 
-        let mut bytes_written = 0_u32;
-        let mut bytes_read = 0_32;
+        let mut frames_written = 0_u32;
+        let mut frames_read = 0_u32;
 
         // write outgoing frames
-        for f in self.write_buffer.iter() {
-            postcard::to_slice(&f, &mut byte_buf[..]).unwrap();
-            let bytes = self.write_ep.write(&byte_buf);
-            byte_buf.clear();
-            bytes_written += 1;
+        if self.running {
+            for f in self.write_buffer.iter() {
+                postcard::to_slice(&f, &mut byte_buf[..]).unwrap();
+                let bytes = self.write_ep.write(&byte_buf);
+                byte_buf.clear();
+                frames_written += 1;
+            }
         }
-
         self.write_buffer.clear();
 
         // get incoming frames
@@ -113,7 +138,7 @@ where
                     // TODO: Handle this error
                     let frame: CANFrame = postcard::from_bytes(&byte_buf[..bytes]).unwrap();
                     self.read_buffer.push(frame).err();
-                    bytes_read += 1;
+                    frames_read += 1;
                 }
                 Err(usb::UsbError::WouldBlock) => break,
                 _ => defmt::unreachable!(),
@@ -123,8 +148,8 @@ where
 
         defmt::info!(
             "Polled -- Wrote {:u32} frames, Read {:u32} frames",
-            bytes_written,
-            bytes_read,
+            frames_written,
+            frames_read,
         );
     }
 }
@@ -138,8 +163,6 @@ where
         &self,
         writer: &mut usb::class_prelude::DescriptorWriter,
     ) -> usb::Result<()> {
-        writer.iad(self.comm_if, 2, 0x0, 0x0, 0x0)?;
-        writer.interface(self.comm_if, 0x0a, 0x00, 0x00)?;
         writer.interface(self.data_if, 0x0a, 0x00, 0x00)?;
         writer.endpoint(&self.write_ep)?;
         writer.endpoint(&self.read_ep)?;
@@ -153,26 +176,91 @@ where
 
     // we can handle other stuff here
     fn control_in(&mut self, xfer: usb::class::ControlIn<B>) {
-        let _ = xfer;
-    }
-
-    /// This method will handle settings
-    fn control_out(&mut self, xfer: usb::class::ControlOut<B>) {
+        use core::convert::TryFrom;
         use usb::control;
         let req = xfer.request();
-        let data = xfer.data();
 
-        if !(req.request_type == control::RequestType::Class
-            && req.recipient == control::Recipient::Interface
-            && req.index == u8::from(self.comm_if) as u16)
+        if !(req.request_type == control::RequestType::Vendor
+            && req.recipient == control::Recipient::Device)
         {
             return;
         }
 
-        match req.request {
-            _ => {
-                xfer.reject().ok();
-            }
+        if let Ok(req_type) = UsbRequests::try_from(req.request) {
+            match req_type {
+                UsbRequests::NOP => {
+                    defmt::info!("Recieved NOP op");
+                    xfer.accept(|buf| Ok(0)).ok();
+                }
+                UsbRequests::GetError => {
+                    defmt::info!("Recieved get error req");
+
+                    xfer.accept(|buf| {
+                        buf[0] = 0x00; // TODO: Implement error codes
+                        Ok(1)
+                    })
+                    .ok();
+                }
+                #[allow(unreachable_patterns)]
+                _ => {
+                    xfer.reject().ok();
+                }
+            };
+        } else {
+            xfer.reject().ok();
+        }
+    }
+
+    /// This method will handle settings
+    fn control_out(&mut self, xfer: usb::class::ControlOut<B>) {
+        use core::convert::TryFrom;
+        use usb::control;
+        use UsbRequests;
+
+        let req = xfer.request();
+        let data = xfer.data();
+
+        if !(req.request_type == control::RequestType::Vendor
+            && req.recipient == control::Recipient::Device)
+        {
+            return;
+        }
+
+        if let Ok(req_type) = UsbRequests::try_from(req.request) {
+            match req_type {
+                UsbRequests::NOP => {
+                    defmt::info!("Recieved NOP op");
+                }
+                UsbRequests::Settings if data.len() >= 32 => {
+                    let settings: adaptor_common::AdaptorSettings =
+                        match postcard::from_bytes(data).ok() {
+                            Some(settings) => settings,
+                            None => {
+                                defmt::warn!("Could not parse settings");
+                                xfer.reject().ok();
+                                return;
+                            }
+                        };
+                    self.buffered_settings = Some(settings);
+                }
+                UsbRequests::LedEnable if data.len() >= 1 => {
+                    let leds_enabled = data[0] > 0;
+                }
+                UsbRequests::Run if data.len() >= 1 => {
+                    let run = data[0] > 0;
+                }
+                UsbRequests::Reset => {
+                    let to_reset = true;
+                }
+                #[allow(unreachable_patterns)]
+                _ => {
+                    xfer.reject().ok();
+                    return;
+                }
+            };
+            xfer.accept().ok();
+        } else {
+            xfer.reject().ok();
         }
     }
 }
